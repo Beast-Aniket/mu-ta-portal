@@ -113,19 +113,22 @@ def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     
+    # 1. Users
     c.execute('''CREATE TABLE IF NOT EXISTS users (
                     username TEXT PRIMARY KEY, password TEXT, role TEXT, full_name TEXT, photo BLOB)''')
     
+    # 2. Professors
     c.execute('''CREATE TABLE IF NOT EXISTS professors (
                     mobile_number TEXT PRIMARY KEY, full_name TEXT, 
                     address_res TEXT, address_prof TEXT, basic_pay REAL,
                     bank_name TEXT, ifsc_code TEXT, account_number TEXT)''')
     
+    # 3. TA Bills (Added meeting_date)
     c.execute('''CREATE TABLE IF NOT EXISTS ta_bills (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, 
                     aadhaar_number TEXT, candidate_name TEXT, mobile_number TEXT, 
                     examination TEXT, subject TEXT, month_year TEXT, purpose_text TEXT, 
-                    receipt_no TEXT, receipt_date DATE,
+                    receipt_no TEXT, receipt_date DATE, meeting_date DATE,
                     rly_from TEXT, rly_to TEXT, rly_ticket_no TEXT, rly_amount REAL,
                     bus_from TEXT, bus_to TEXT, bus_amount REAL,
                     car_from TEXT, car_to TEXT, car_vehicle_no TEXT, car_km REAL, car_amount REAL,
@@ -135,15 +138,18 @@ def init_db():
                     submitted_by TEXT,
                     status TEXT DEFAULT 'Submitted')''')
 
+    # 4. Bill Dates
     c.execute('''CREATE TABLE IF NOT EXISTS bill_dates (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, bill_id INTEGER,
                     visit_date DATE, place TEXT,
                     FOREIGN KEY (bill_id) REFERENCES ta_bills (id))''')
     
+    # 5. Activity Logs
     c.execute('''CREATE TABLE IF NOT EXISTS activity_logs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT, action TEXT,
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)''')
 
+    # 6. Edit Requests
     c.execute('''CREATE TABLE IF NOT EXISTS edit_requests (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     bill_id INTEGER, username TEXT, reason TEXT,
@@ -171,6 +177,24 @@ def get_logs():
     df = pd.read_sql_query("SELECT timestamp, username, action FROM activity_logs ORDER BY id DESC", conn)
     conn.close()
     return df
+
+# --- DYNAMIC EXAM FETCHER ---
+def get_all_exams():
+    """Fetches custom exams from DB and combines with static EXAM_OPTIONS"""
+    conn = sqlite3.connect(DB_NAME)
+    try:
+        df = pd.read_sql_query("SELECT DISTINCT examination FROM ta_bills WHERE examination IS NOT NULL AND examination != ''", conn)
+        db_exams = df['examination'].tolist()
+    except:
+        db_exams = []
+    conn.close()
+    
+    combined = []
+    for e in EXAM_OPTIONS + db_exams:
+        if e not in combined and e != "Other Exam":
+            combined.append(e)
+    combined.append("Other Exam")
+    return combined
 
 # --- USER MANAGEMENT ---
 def get_all_users():
@@ -264,8 +288,7 @@ def get_bills_by_aadhaar(aadhaar):
     try:
         df = pd.read_sql_query("""
             SELECT id, candidate_name as 'Full Name', examination as Exam, 
-                   grand_total as Amount, submitted_on as Date, status as 'Current Status',
-                   aadhaar_number as 'Aadhaar'
+                   grand_total as Amount, submitted_on as Date, status as 'Current Status'
             FROM ta_bills WHERE aadhaar_number=? ORDER BY id DESC""", conn, params=(aadhaar,))
     except:
         df = pd.DataFrame() 
@@ -286,7 +309,6 @@ def get_bills_by_user(username):
     return df
 
 def get_bills_by_visit_date(aadhaar, start_date, end_date):
-    """Filter bills that have at least one visit in the given range."""
     conn = sqlite3.connect(DB_NAME)
     query = """
         SELECT DISTINCT t.id, t.candidate_name as 'Full Name', t.examination as Exam, 
@@ -323,15 +345,15 @@ def submit_bill(data, visits, username):
         
         c.execute('''INSERT INTO ta_bills (
                         aadhaar_number, candidate_name, mobile_number, examination, subject, month_year, 
-                        purpose_text, receipt_no, receipt_date, 
+                        purpose_text, receipt_no, receipt_date, meeting_date,
                         rly_from, rly_to, rly_ticket_no, rly_amount,
                         bus_from, bus_to, bus_amount, 
                         car_from, car_to, car_vehicle_no, car_km, car_amount, 
                         lumpsum_allowance, da_amount, grand_total, 
                         bank_name, ifsc_code, account_number, submitted_by
-                     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                   (data['aadhaar'], data['name'], data['mobile'], data['exam'], data['subject'], data['month'], 
-                   data['purpose'], data['receipt_no'], data['receipt_date'], 
+                   data['purpose'], data['receipt_no'], data['receipt_date'], data['meeting_date'],
                    data['rly_f'], data['rly_t'], data['rly_tkt'], data['rly_a'],
                    data['bus_f'], data['bus_t'], data['bus_a'], 
                    data['car_f'], data['car_t'], data['car_no'], data['car_k'], data['car_a'],
@@ -369,7 +391,7 @@ def approve_update_existing(request_id, bill_id, proposed_json):
         c = conn.cursor()
         c.execute("""UPDATE ta_bills SET 
                      aadhaar_number=?, candidate_name=?, mobile_number=?, examination=?, subject=?, month_year=?, 
-                     purpose_text=?, receipt_no=?, receipt_date=?, 
+                     purpose_text=?, receipt_no=?, receipt_date=?, meeting_date=?,
                      rly_from=?, rly_to=?, rly_ticket_no=?, rly_amount=?,
                      bus_from=?, bus_to=?, bus_amount=?, 
                      car_from=?, car_to=?, car_vehicle_no=?, car_km=?, car_amount=?, 
@@ -377,7 +399,7 @@ def approve_update_existing(request_id, bill_id, proposed_json):
                      bank_name=?, ifsc_code=?, account_number=?, status='Approved'
                      WHERE id=?""", 
                   (main_data['aadhaar'], main_data['name'], main_data['mobile'], main_data['exam'], main_data['subject'], main_data['month'], 
-                   main_data['purpose'], main_data['receipt_no'], main_data['receipt_date'], 
+                   main_data['purpose'], main_data['receipt_no'], main_data['receipt_date'], main_data['meeting_date'],
                    main_data['rly_f'], main_data['rly_t'], main_data['rly_tkt'], main_data['rly_a'],
                    main_data['bus_f'], main_data['bus_t'], main_data['bus_a'], 
                    main_data['car_f'], main_data['car_t'], main_data['car_no'], main_data['car_k'], main_data['car_a'],
@@ -403,7 +425,7 @@ def get_user_edit_status(username):
     conn.close()
     return df
 
-# --- REPORTING (UPDATED FOR FULL COLUMNS) ---
+# --- REPORTING ---
 def get_report_data(date_filter=None, username=None, aadhaar=None):
     conn = sqlite3.connect(DB_NAME)
     query = """
@@ -413,6 +435,7 @@ def get_report_data(date_filter=None, username=None, aadhaar=None):
         t.aadhaar_number as 'Aadhaar', t.candidate_name as 'Full Name', t.mobile_number as 'Mobile',
         t.examination as 'Exam', t.subject as 'Subject', t.month_year as 'Month/Year',
         t.purpose_text as 'Purpose', t.receipt_no as 'Receipt No', t.receipt_date as 'Receipt Date',
+        t.meeting_date as 'Meeting Date',
         t.bank_name as 'Bank', t.ifsc_code as 'IFSC', t.account_number as 'Account No',
         t.rly_from as 'Rly From', t.rly_to as 'Rly To', t.rly_ticket_no as 'Rly Ticket', t.rly_amount as 'Rly Amt',
         t.bus_from as 'Bus From', t.bus_to as 'Bus To', t.bus_amount as 'Bus Amt',
@@ -438,7 +461,7 @@ def get_report_data(date_filter=None, username=None, aadhaar=None):
         query += " AND t.aadhaar_number = ?"
         params.append(aadhaar)
         
-    query += " GROUP BY t.id ORDER BY t.id ASC" # Latest at bottom (Ascending Order)
+    query += " GROUP BY t.id ORDER BY t.id ASC" 
     
     df = pd.read_sql_query(query, conn, params=params)
     conn.close()
@@ -563,8 +586,7 @@ def admin_dashboard():
                         else:
                             st.error("Could not delete user.")
 
-    # --- SEARCH ---
-    with tab2:
+    with tab2: # Search
         st.subheader("🔍 Search Bill History")
         with st.container(border=True):
             search_query = st.text_input("Enter Name, Mobile or Aadhaar", placeholder="Search...")
@@ -581,8 +603,7 @@ def admin_dashboard():
                     else:
                         st.warning("No records found.")
 
-    # --- EDIT REQUESTS (UPDATED LOGIC) ---
-    with tab3:
+    with tab3: # Edit Requests (WITH SEPARATE VIEW & APPROVE)
         st.subheader("Pending Edit Requests")
         conn = sqlite3.connect(DB_NAME)
         req_df = pd.read_sql_query("SELECT * FROM edit_requests WHERE status='Pending'", conn)
@@ -591,22 +612,31 @@ def admin_dashboard():
         if not req_df.empty:
             for index, row in req_df.iterrows():
                 with st.container(border=True):
-                    c1, c2 = st.columns([3, 1])
-                    c1.warning(f"**{row['username']}** requests update for **Bill #{row['bill_id']}**")
-                    c1.info(f"Reason: {row['reason']}")
+                    st.warning(f"**{row['username']}** requests update for **Bill #{row['bill_id']}**")
+                    st.info(f"**Reason:** {row['reason']}")
                     
-                    if c2.button("👁️ View & Approve", key=f"view_{row['id']}"):
+                    with st.expander("👁️ View Proposed Changes"):
+                        try:
+                            prop_data = json.loads(row['proposed_data'])
+                            st.write("**Main Details:**")
+                            st.json(prop_data.get('main', {}))
+                            st.write("**Visit Dates:**")
+                            st.table(pd.DataFrame(prop_data.get('visits', [])))
+                        except:
+                            st.error("Could not parse proposed data.")
+                    
+                    if st.button("✅ Approve Request", key=f"app_{row['id']}", type="primary"):
                         if approve_update_existing(row['id'], row['bill_id'], row['proposed_data']):
-                            log_activity("SuperAdmin", f"Approved update for Bill #{row['bill_id']}")
+                            log_activity(st.session_state.user, f"Approved update for Bill #{row['bill_id']}")
                             st.success("Bill Updated Successfully!")
+                            time.sleep(1)
                             st.rerun()
                         else:
                             st.error("Error updating bill.")
         else:
             st.success("No pending requests.")
 
-    # --- LOGS ---
-    with tab4:
+    with tab4: # Logs
         st.subheader("System Logs")
         log_df = get_logs()
         st.dataframe(log_df, use_container_width=True)
@@ -616,8 +646,7 @@ def admin_dashboard():
                 log_df.to_excel(writer, index=False)
             st.download_button("📥 Download Logs (Excel)", output.getvalue(), "System_Logs.xlsx")
 
-    # --- REPORTS (UPDATED EXCEL with Multi-Sheets) ---
-    with tab5:
+    with tab5: # Reports
         st.subheader("Daily Report (One Row Per Bill - Ascending)")
         report_date = st.date_input("Select Date", value=date.today())
         
@@ -644,17 +673,16 @@ def admin_dashboard():
 def user_portal():
     st.markdown('<div class="main-header"><h1>🎓 TA BILL ENTRY</h1></div>', unsafe_allow_html=True)
     
-    # Session State (Robust Init moved to main, but double check here)
     if "aadhaar_verified" not in st.session_state: st.session_state.aadhaar_verified = False
     if "edit_bill_id" not in st.session_state: st.session_state.edit_bill_id = None
     if "aadhaar_exists_msg" not in st.session_state: st.session_state.aadhaar_exists_msg = False
+    if "load_personal_data" not in st.session_state: st.session_state.load_personal_data = False
 
-    tab1, tab2, tab3 = st.tabs(["📝 Bill Entry Form", "📜 My History", "🕒 Track Requests"])
+    tab1, tab2, tab3 = st.tabs(["📝 New Bill Entry", "📜 My History", "🕒 Track Requests"])
 
     # --- TAB 1: FORM & AADHAAR ---
     with tab1:
         if not st.session_state.aadhaar_verified:
-            # 1. AADHAAR INPUT VIEW
             with st.container(border=True):
                 st.subheader("Step 1: Enter Aadhaar")
                 aadhaar_input = st.text_input("Aadhaar Number (12 Digits)", max_chars=12)
@@ -669,7 +697,8 @@ def user_portal():
                     else:
                         st.error("Invalid Aadhaar Number")
         else:
-            # 2. BILL FORM VIEW
+            existing_bills = get_bills_by_aadhaar(st.session_state.current_aadhaar)
+            
             if st.session_state.aadhaar_exists_msg:
                 st.toast("⚠️ Records found for this Aadhaar! Check 'My History' tab.", icon="📂")
                 st.info(f"Records found for {st.session_state.current_aadhaar}. You can view them in the 'My History' tab.")
@@ -681,9 +710,27 @@ def user_portal():
                 st.session_state.aadhaar_verified = False
                 st.session_state.current_aadhaar = ""
                 st.session_state.edit_bill_id = None
+                st.session_state.load_personal_data = False
                 st.rerun()
 
-            # --- Check if Cloning from History ---
+            if not existing_bills.empty:
+                st.markdown("### 📂 Previous Records Found")
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    if st.button("⬇️ Load My Personal Details (Auto-fill)", use_container_width=True):
+                        st.session_state.load_personal_data = True
+                        st.session_state.edit_bill_id = None
+                        st.rerun()
+                with col_b:
+                    bill_opts = existing_bills.apply(lambda x: f"#{x['id']} - {x['Exam']} ({x['Date']})", axis=1).tolist()
+                    sel_bill = st.selectbox("Or Clone/Edit a specific previous bill:", ["-- Select Bill --"] + bill_opts, label_visibility="collapsed")
+                    if sel_bill != "-- Select Bill --":
+                        bid = int(sel_bill.split('#')[1].split(' -')[0])
+                        if st.button("✏️ Load Full Bill Data", use_container_width=True):
+                            st.session_state.edit_bill_id = bid
+                            st.session_state.load_personal_data = False
+                            st.rerun()
+
             if st.session_state.edit_bill_id:
                 st.warning(f"⚠️ CLONING MODE: Editing data from Bill #{st.session_state.edit_bill_id}. Submitting will create a NEW Bill ID.")
 
@@ -691,14 +738,14 @@ def user_portal():
             pf_name, pf_mobile, pf_basic = "", "", ""
             pf_bank, pf_ifsc, pf_acc = "", "", ""
             pf_addr_res, pf_addr_prof = "", ""
-            pf_exam, pf_sub, pf_my, pf_pur, pf_rec, pf_rec_d = EXAM_OPTIONS[0], "", "", PURPOSE_OPTIONS[0], "", None
+            pf_exam, pf_sub, pf_my, pf_pur, pf_rec, pf_rec_d, pf_meeting_d = EXAM_OPTIONS[0], "", "", PURPOSE_OPTIONS[0], "", None, None
             pf_rf, pf_rt, pf_rtk, pf_ra = "", "", "", "0.00"
             pf_bf, pf_bt, pf_ba = "", "", "0.00"
             pf_cf, pf_ct, pf_cn, pf_ck, pf_ca = "", "", "", "0.00", "0.00"
-            pf_lump, pf_da = "200.00", "0.00"
+            pf_lump, pf_da = "0.00", "0.00"
             pf_visits = []
 
-            # LOAD DATA
+            # 1. LOAD FULL DATA (From Edit/Clone)
             if st.session_state.edit_bill_id:
                 bd, v_data = get_bill_details(st.session_state.edit_bill_id)
                 if bd:
@@ -714,6 +761,7 @@ def user_portal():
                     pf_pur = bd.get('purpose_text', PURPOSE_OPTIONS[0])
                     pf_rec = bd.get('receipt_no','')
                     if bd.get('receipt_date'): pf_rec_d = datetime.strptime(bd['receipt_date'], '%Y-%m-%d').date()
+                    if bd.get('meeting_date'): pf_meeting_d = datetime.strptime(bd['meeting_date'], '%Y-%m-%d').date()
                     
                     pf_rf, pf_rt, pf_rtk, pf_ra = bd['rly_from'], bd['rly_to'], bd['rly_ticket_no'], str(bd['rly_amount'])
                     pf_bf, pf_bt, pf_ba = bd['bus_from'], bd['bus_to'], str(bd['bus_amount'])
@@ -722,8 +770,29 @@ def user_portal():
                     
                     for v in v_data: pf_visits.append({'date': datetime.strptime(v['visit_date'], '%Y-%m-%d').date(), 'place': v['place']})
 
+            # 2. LOAD ONLY PERSONAL DATA (Fix applied here)
+            elif st.session_state.load_personal_data and not existing_bills.empty:
+                latest_id = existing_bills.iloc[0]['id']
+                bd, _ = get_bill_details(latest_id)
+                if bd:
+                    pf_name = bd.get('candidate_name','')
+                    pf_mobile = bd.get('mobile_number','')
+                    pf_bank = bd.get('bank_name', '')
+                    pf_ifsc = bd.get('ifsc_code', '')
+                    pf_acc = bd.get('account_number', '')
+                    
+                    pd_info = get_professor(pf_mobile)
+                    if pd_info is not None:
+                        pf_basic = str(pd_info['basic_pay'])
+                        pf_addr_res = pd_info['address_res']
+                        pf_addr_prof = pd_info['address_prof']
+                        if not pf_bank: pf_bank = pd_info['bank_name']
+                        if not pf_ifsc: pf_ifsc = pd_info['ifsc_code']
+                        if not pf_acc: pf_acc = pd_info['account_number']
+
             # --- FORM FIELDS ---
             with st.container(border=True):
+                st.markdown('<div class="section-header">1. Personal Details</div>', unsafe_allow_html=True)
                 c1, c2, c3 = st.columns(3)
                 mobile = c1.text_input("Mobile No", value=pf_mobile)
                 name = c2.text_input("Full Name", value=pf_name)
@@ -738,6 +807,7 @@ def user_portal():
                 addr_res = c7.text_area("Res Address", value=pf_addr_res, height=70)
                 addr_prof = c8.text_area("Prof Address", value=pf_addr_prof, height=70)
                 
+                st.markdown('<div class="section-header">2. Dates</div>', unsafe_allow_html=True)
                 st.subheader("Visit Dates")
                 if "rows" not in st.session_state: st.session_state.rows = 1
                 if st.session_state.edit_bill_id and len(pf_visits) > 0: st.session_state.rows = len(pf_visits)
@@ -750,13 +820,30 @@ def user_portal():
                     vd = vc1.date_input(f"Date {i+1}", value=d_val, key=f"d_{i}")
                     vp = vc2.text_input(f"Place {i+1}", value=p_val, key=f"p_{i}")
                     visits.append({'date': str(vd), 'place': vp})
-                if st.button("➕ Add Date"): 
+                
+                b1, b2 = st.columns([1, 5])
+                if b1.button("➕ Add Date"): 
                     st.session_state.rows += 1
                     st.rerun()
+                if st.session_state.rows > 1:
+                    if b2.button("➖ Remove Date"):
+                        st.session_state.rows -= 1
+                        st.rerun()
 
-                st.subheader("Exam & Purpose")
+                st.subheader("Meeting Date")
+                meeting_date = st.date_input("Select Meeting Date", value=pf_meeting_d)
+
+                st.markdown('<div class="section-header">3. Exam & Purpose</div>', unsafe_allow_html=True)
                 e1, e2, e3 = st.columns(3)
-                exam = e1.selectbox("Exam", EXAM_OPTIONS, index=EXAM_OPTIONS.index(pf_exam) if pf_exam in EXAM_OPTIONS else 0)
+                
+                dynamic_exams = get_all_exams()
+                e_idx = dynamic_exams.index(pf_exam) if pf_exam in dynamic_exams else 0
+                exam_sel = e1.selectbox("Exam", dynamic_exams, index=e_idx)
+                if exam_sel == "Other Exam":
+                    exam = e1.text_input("Specify Exam Name", value=pf_exam if pf_exam not in dynamic_exams else "")
+                else:
+                    exam = exam_sel
+                    
                 subject = e2.text_input("Subject", value=pf_sub)
                 month = e3.text_input("Month/Year", value=pf_my)
                 
@@ -767,7 +854,7 @@ def user_portal():
                 receipt = p2.text_input("Receipt No", value=pf_rec)
                 r_date = p3.date_input("Receipt Date", value=pf_rec_d)
 
-                st.subheader("Travel Expenses")
+                st.markdown('<div class="section-header">4. Travel Expenses</div>', unsafe_allow_html=True)
                 st.markdown("**Railway**")
                 r1, r2, r3, r4 = st.columns(4)
                 rf = r1.text_input("From", value=pf_rf, key="rf")
@@ -789,7 +876,7 @@ def user_portal():
                 ck = k4.text_input("KM", value=pf_ck)
                 ca = k5.text_input("Amt", value=pf_ca, key="ca")
 
-                st.subheader("Final Calculation")
+                st.markdown('<div class="section-header">5. Final Calculation</div>', unsafe_allow_html=True)
                 f1, f2, f3 = st.columns(3)
                 lump_str = f1.text_input("Lumpsum Allowance", value=pf_lump)
                 da_str = f2.text_input("DA Amount", value=pf_da)
@@ -804,7 +891,7 @@ def user_portal():
                     'addr_res': addr_res, 'addr_prof': addr_prof, 'basic': basic_pay_str,
                     'bank_name': bank_name, 'ifsc': ifsc, 'acc_no': acc_no,
                     'exam': exam, 'subject': subject, 'month': month, 'purpose': purpose,
-                    'receipt_no': receipt, 'receipt_date': r_date,
+                    'receipt_no': receipt, 'receipt_date': r_date, 'meeting_date': meeting_date,
                     'rly_f': rf, 'rly_t': rt, 'rly_tkt': rtk, 'rly_a': safe_float(ra),
                     'bus_f': bf, 'bus_t': bt, 'bus_a': safe_float(ba),
                     'car_f': cf, 'car_t': ct, 'car_no': cn, 'car_k': safe_float(ck), 'car_a': safe_float(ca),
@@ -816,12 +903,11 @@ def user_portal():
                         bid = submit_bill(form_data, visits, st.session_state.user)
                         if bid:
                             log_activity(st.session_state.user, f"Created Bill #{bid}")
-                            st.balloons()
                             st.success("Bill Created Successfully!")
-                            # Reset Logic
                             st.session_state.aadhaar_verified = False
                             st.session_state.edit_bill_id = None
-                            time.sleep(1) # Pause to let user see success message
+                            st.session_state.load_personal_data = False
+                            time.sleep(1) 
                             st.rerun()
                     else:
                         st.error("Name & Mobile Required")
@@ -833,13 +919,13 @@ def user_portal():
                         log_activity(st.session_state.user, f"Requested update for Bill #{st.session_state.edit_bill_id}")
                         st.success("Update Request Sent to Admin!")
                         st.session_state.edit_bill_id = None
+                        st.session_state.load_personal_data = False
                         st.rerun()
 
     # --- TAB 2: HISTORY (UPGRADED) ---
     with tab2:
         st.subheader("My History & Reports")
         
-        # FILTERS
         c1, c2 = st.columns(2)
         d_start = c1.date_input("Filter Submission From", value=date.today().replace(day=1))
         d_end = c2.date_input("Filter Submission To", value=date.today())
@@ -848,17 +934,13 @@ def user_portal():
         v_start = c3.date_input("Visit Date From", value=None)
         v_end = c4.date_input("Visit Date To", value=None)
         
-        # DOWNLOAD FULL REPORT
         if st.button("📥 Download Filtered Report (Excel)"):
-            # Use get_report_data which returns FULL columns
             report_df = get_report_data(username=st.session_state.user)
             if not report_df.empty:
                 try:
                     report_df['DateObj'] = pd.to_datetime(report_df['Submission Date']).dt.date
                     final_export = report_df[(report_df['DateObj'] >= d_start) & (report_df['DateObj'] <= d_end)].drop(columns=['DateObj'])
-                    
-                    # Sort Ascending (Oldest First -> Latest Last)
-                    final_export.sort_values(by='Submission Date', ascending=True, inplace=True)
+                    final_export.sort_values(by='Bill ID', ascending=True, inplace=True)
                     
                     output = BytesIO()
                     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
@@ -871,23 +953,17 @@ def user_portal():
         
         st.divider()
         
-        # TABLE VIEW
-        # Fetch all bills for this user
         user_bills = get_bills_by_user(st.session_state.user)
-        
         if not user_bills.empty:
-            # 1. Filter by Submission Date
             user_bills['DateObj'] = pd.to_datetime(user_bills['Date']).dt.date
             filtered_df = user_bills[(user_bills['DateObj'] >= d_start) & (user_bills['DateObj'] <= d_end)]
             
-            # 2. Filter by Visit Date
             if v_start and v_end and st.session_state.current_aadhaar:
                 visit_filtered = get_bills_by_visit_date(st.session_state.current_aadhaar, v_start, v_end)
                 filtered_df = filtered_df[filtered_df['id'].isin(visit_filtered['id'])]
             
             filtered_df = filtered_df.drop(columns=['DateObj'])
             
-            # PAGINATION
             page_size = 50
             total_rows = len(filtered_df)
             if total_rows > 0:
@@ -899,14 +975,13 @@ def user_portal():
                 st.dataframe(filtered_df.iloc[start_idx:end_idx], use_container_width=True)
                 st.caption(f"Showing {start_idx+1}-{end_idx} of {total_rows} records")
                 
-                # Edit Action from Table
                 st.write("---")
                 col_sel, col_act = st.columns([3, 1])
                 bill_to_edit_id = col_sel.selectbox("Select Bill ID to Clone/Edit", filtered_df['id'].tolist())
                 if col_act.button("✏️ Edit Selected Bill"):
                     st.session_state.edit_bill_id = bill_to_edit_id
-                    st.session_state.aadhaar_verified = True # Force into form view
-                    st.session_state.current_aadhaar = filtered_df[filtered_df['id'] == bill_to_edit_id]['Aadhaar'].values[0] # Set aadhaar from bill
+                    st.session_state.aadhaar_verified = True 
+                    st.session_state.current_aadhaar = filtered_df[filtered_df['id'] == bill_to_edit_id]['Aadhaar'].values[0]
                     st.rerun()
             else:
                 st.info("No records match your filters.")
@@ -926,9 +1001,10 @@ def user_portal():
 # 7. MAIN RUN
 # ==========================================
 def main():
-    # Force initialize session state for aadhaar_exists_msg BEFORE accessing it anywhere
     if "aadhaar_exists_msg" not in st.session_state:
         st.session_state.aadhaar_exists_msg = False
+    if "load_personal_data" not in st.session_state: 
+        st.session_state.load_personal_data = False
 
     init_db()
     apply_dynamic_styles()
@@ -948,8 +1024,8 @@ def main():
             st.markdown(f"### {st.session_state.user}")
             st.info(f"Role: {st.session_state.role}")
             if st.button("Logout", use_container_width=True):
-                st.session_state.logged_in = False
-                st.session_state.aadhaar_verified = False
+                for key in list(st.session_state.keys()):
+                    del st.session_state[key]
                 st.rerun()
         
         if st.session_state.role == "Admin":
